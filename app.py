@@ -1,87 +1,96 @@
-import streamlit as st
-import pandas as pd
-import matplotlib.pyplot as plt
-import re
+function analog_browser()
+    % --- Settings ---
+    BASE_URL = 'https://raw.githubusercontent.com/gmakkena/analog-design-data/main/';
+    FILE_MAP = {
+        'Efficiency vs. Bias (gm/ID vs VGS)', 'gmoverid_vs_vgs.csv';
+        'Efficiency vs. Density (gm/ID vs ID/W)', 'gmoverid_vs_idbyw.csv';
+        'Intrinsic Gain vs. Density (gm/gds vs ID/W)', 'gmovergds_vs_idbyw.csv';
+        'Gain vs. Efficiency (gm/gds vs gm/ID)', 'gmovergds_vs_gmoverid.csv';
+        'Output Conductance (gds/ID vs ID/W)', 'gdsbyid_vs_idbyw.csv';
+        'Transconductance (gm vs VGS)', 'gm_vs_vgs.csv'
+    };
 
-# --- CONFIGURATION ---
-st.set_page_config(page_title="Analog Design Toolkit", layout="wide")
-
-# Correct Raw URL for your specific repository
-BASE_URL = "https://raw.githubusercontent.com/gmakkena/analog-design-data/main/"
-
-# The exact filenames from your repo
-PLOT_OPTIONS = {
-    "Efficiency vs. Bias (gm/ID vs VGS)": "gmoverid_vs_vgs.csv",
-    "Efficiency vs. Density (gm/ID vs ID/W)": "gmoverid_vs_idbyw.csv",
-    "Intrinsic Gain vs. Density (gm/gds vs ID/W)": "gmovergds_vs_idbyw.csv",
-    "Gain vs. Efficiency (gm/gds vs gm/ID)": "gmovergds_vs_gmoverid.csv",
-    "Output Conductance (gds/ID vs ID/W)": "gdsbyid_vs_idbyw.csv",
-    "Transconductance (gm vs VGS)": "gm_vs_vgs.csv"
-}
-
-st.title("🔌 Analog IC Characterization Tool")
-st.sidebar.header("Plot Settings")
-
-# 1. Selection
-choice = st.sidebar.selectbox("Select Characterization Plot:", list(PLOT_OPTIONS.keys()))
-filename = PLOT_OPTIONS[choice]
-
-@st.cache_data
-def load_data(url):
-    # Handling potential parsing errors from Cadence exports
-    return pd.read_csv(url, on_bad_lines='skip')
-
-try:
-    df = load_data(BASE_URL + filename)
+    % --- UI Construction ---
+    fig = uifigure('Name', 'Analog IC Design Browser (Linear Scale)', 'Position', [100, 100, 1000, 750]);
     
-    # 2. Extract Lengths (L) from headers
-    # Cadence headers are long; we look for the (L=...) part
-    length_map = {}
-    for i in range(0, df.shape[1], 2):
-        header = df.columns[i]
-        match = re.search(r'L=([\d\.e-]+)', header)
-        if match:
-            # Convert 1.8e-07 to "180nm"
-            l_nm = f"{float(match.group(1))*1e9:.0f}nm"
-            length_map[l_nm] = i
-        else:
-            length_map[f"Trace {i//2 + 1}"] = i
+    pnl = uipanel(fig, 'Position', [20, 670, 960, 60], 'Title', 'Controls');
+    uilabel(pnl, 'Position', [10, 15, 150, 22], 'Text', 'Select Characterization:', 'FontWeight', 'bold');
+    
+    dd = uidropdown(pnl, 'Position', [160, 15, 350, 22], ...
+        'Items', FILE_MAP(:,1), ...
+        'ValueChanged', @(dd, event) update_plot(dd.Value));
 
-    # 3. Sidebar Filter
-    selected_ls = st.sidebar.multiselect("Select Lengths:", 
-                                         options=list(length_map.keys()), 
-                                         default=list(length_map.keys()))
-    
-    # 4. Plotting
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
-    for l_label in selected_ls:
-        idx = length_map[l_label]
-        x_raw = df.iloc[:, idx]
-        y_raw = df.iloc[:, idx+1]
+    ax = uiaxes(fig, 'Position', [80, 80, 850, 560]);
+    grid(ax, 'on'); 
+    ax.XMinorGrid = 'on'; 
+    ax.YMinorGrid = 'on';
+    hold(ax, 'on');
+
+    update_plot(FILE_MAP{1,1});
+
+    % --- Plotting Engine ---
+    function update_plot(selected_text)
+        cla(ax);
+        idx = find(strcmp(FILE_MAP(:,1), selected_text));
+        filename = FILE_MAP{idx, 2};
         
-        # Clean data: remove NaNs
-        mask = x_raw.notna() & y_raw.notna()
-        x, y = x_raw[mask], y_raw[mask]
-        
-        # Use markers to ensure NO INTERPOLATION visibility
-        ax.plot(x, y, '-o', label=f"L={l_label}", markersize=3, linewidth=1.2)
+        try
+            legend(ax, 'off');
+            data = readtable([BASE_URL, filename], 'VariableNamingRule', 'preserve');
+            colors = lines(width(data)/2);
+            
+            for i = 1:2:width(data)
+                x = data{:, i}; y = data{:, i+1};
+                mask = ~isnan(x) & ~isnan(y);
+                
+                header = data.Properties.VariableNames{i};
+                L_match = regexp(header, 'L=([\d\.e-]+)', 'tokens');
+                L_label = sprintf('L = %.0fnm', str2double(L_match{1}{1}) * 1e9);
+                
+                plot(ax, x(mask), y(mask), '-o', ...
+                     'LineWidth', 0.8, ...
+                     'MarkerSize', 2.5, ...
+                     'MarkerFaceColor', colors((i+1)/2, :), ...
+                     'Color', colors((i+1)/2, :), ...
+                     'DisplayName', L_label);
+            end
+            
+            % Axis Styling
+            title(ax, selected_text, 'FontSize', 13);
+            set(ax, 'XScale', 'linear', 'YScale', 'linear');
+            
+            % --- X-AXIS RESTRICTION FOR ID/W (Max 300) ---
+            if contains(filename, 'idbyw')
+                xlim(ax, [0, 300]); % Restricts X-axis from 0 to 300
+            else
+                xlim(ax, 'auto');   % Default for other plots
+            end
 
-    # 5. Axis Formatting Logic
-    ax.set_title(f"{choice} (Raw Spectre Data)", fontsize=14)
-    ax.grid(True, which="both", linestyle=":", alpha=0.5)
-    
-    # Log scales for specific plots
-    if "idbyw" in filename: ax.set_xscale('log')
-    if "gds" in filename or "gmovergds" in filename: ax.set_yscale('log')
-    
-    ax.legend()
-    st.pyplot(fig)
+            % --- SMART LABELING ---
+            if contains(filename, 'vgs')
+                xlabel(ax, 'Gate-Source Voltage V_{GS} (V)');
+            elseif contains(filename, 'idbyw')
+                xlabel(ax, 'Current Density I_D/W (A/m)');
+            elseif contains(filename, 'gmoverid')
+                xlabel(ax, 'Efficiency g_m/I_D (V^{-1})');
+            end
 
-    # 6. Design Table
-    with st.expander("Show Data Table"):
-        st.dataframe(df)
-
-except Exception as e:
-    st.error(f"Error loading {filename}. Check your GitHub file names.")
-    st.write(f"Direct link attempted: {BASE_URL + filename}")
+            if contains(filename, 'gmovergds')
+                ylabel(ax, 'Intrinsic Gain g_m/g_{ds} (V/V)');
+            elseif strncmp(filename, 'gmoverid', 8) && ~contains(filename, 'gmovergds')
+                ylabel(ax, 'Efficiency g_m/I_D (V^{-1})');
+            elseif contains(filename, 'gdsbyid')
+                ylabel(ax, 'Output Conductance g_{ds}/I_D (V^{-1})');
+            elseif contains(filename, 'gm_vs')
+                ylabel(ax, 'Transconductance g_m (S)');
+            end
+            
+            lgd = legend(ax, 'Location', 'northeastoutside', 'FontSize', 9);
+            lgd.ItemHitFcn = @(src, event) set(event.Peer, 'Visible', ...
+                char(string(setdiff({'on','off'}, event.Peer.Visible))));
+            
+        catch
+            uialert(fig, 'Could not fetch data from GitHub.', 'Connection Error');
+        end
+    end
+end
